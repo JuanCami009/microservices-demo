@@ -70,6 +70,18 @@
 					</jvmArguments>
 				</configuration>
 			</plugin>
+			<plugin>
+				<groupId>com.github.spotbugs</groupId>
+				<artifactId>spotbugs-maven-plugin</artifactId>
+				<version>4.8.3.1</version>
+				<configuration>
+					<!-- Nivel de esfuerzo: Default es suficiente para CI -->
+					<effort>Default</effort>
+					<!-- Solo reportar bugs de severidad Alta o superior -->
+					<threshold>High</threshold>
+					<failOnError>true</failOnError>
+				</configuration>
+			</plugin>
 		</plugins>
 	</build>
 
