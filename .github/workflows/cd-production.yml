@@ -8,33 +8,33 @@ name: CD — Producción
 #   git tag -a v1.2.0 -m "Release v1.2.0 — Sprint 02"
 #   git push origin master --tags
 #
-# Publica imágenes con tag de versión definitivo en ACR y despliega
-# en la VM de producción via SSH con Docker Compose.
+# Publica imágenes con tag de versión definitivo en Google Artifact Registry
+# y despliega en la VM de producción via SSH con Docker Compose.
 # El job deploy-production requiere aprobación manual (GitHub Environments).
 #
 # Prerequisitos en la VM de producción: mismos que las otras VMs.
 #
 # Secretos requeridos:
-#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-#   AZURE_VM_HOST_PROD     → IP o hostname de la VM de producción
-#   AZURE_VM_USERNAME      → usuario SSH de la VM
-#   AZURE_VM_SSH_KEY       → clave SSH privada
+#   GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT
+#   GCP_VM_HOST_PROD   → IP externa de la VM de producción
+#   GCP_VM_USERNAME    → usuario SSH de la VM
+#   GCP_VM_SSH_KEY     → clave SSH privada
 #
 # Variables requeridas:
-#   ACR_LOGIN_SERVER, ACR_NAME
+#   GCP_PROJECT_ID, GAR_LOCATION, GAR_REPO
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
 env:
-  IMAGE_PREFIX: ${{ vars.ACR_LOGIN_SERVER }}
+  IMAGE_PREFIX: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPO }}
 
 jobs:
 
-  # ── 1. Construcción y publicación de imágenes de producción en ACR ─────────
+  # ── 1. Construcción y publicación de imágenes de producción en GAR ──────────
   build-and-push:
-    name: Construir y publicar imágenes de producción en ACR
+    name: Construir y publicar imágenes de producción en GAR
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -50,15 +50,14 @@ jobs:
           echo "image_version=$IMAGE_VERSION" >> "$GITHUB_OUTPUT"
           echo "Versión de producción: $IMAGE_VERSION"
 
-      - name: Autenticar en Azure (OIDC)
-        uses: azure/login@v2
+      - name: Autenticar en GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Login en Azure Container Registry
-        run: az acr login --name ${{ vars.ACR_NAME }}
+      - name: Configurar Docker para Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GAR_LOCATION }}-docker.pkg.dev --quiet
 
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -119,9 +118,9 @@ jobs:
       - name: Copiar docker-compose.yml a la VM de producción
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.AZURE_VM_HOST_PROD }}
-          username: ${{ secrets.AZURE_VM_USERNAME }}
-          key: ${{ secrets.AZURE_VM_SSH_KEY }}
+          host: ${{ secrets.GCP_VM_HOST_PROD }}
+          username: ${{ secrets.GCP_VM_USERNAME }}
+          key: ${{ secrets.GCP_VM_SSH_KEY }}
           source: docker-compose.yml
           target: /opt/microservices-demo/
 
@@ -131,15 +130,15 @@ jobs:
           VOTE_IMAGE: ${{ env.IMAGE_PREFIX }}/vote:${{ steps.version.outputs.image_version }}
           WORKER_IMAGE: ${{ env.IMAGE_PREFIX }}/worker:${{ steps.version.outputs.image_version }}
           RESULT_IMAGE: ${{ env.IMAGE_PREFIX }}/result:${{ steps.version.outputs.image_version }}
-          ACR_NAME: ${{ vars.ACR_NAME }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
         with:
-          host: ${{ secrets.AZURE_VM_HOST_PROD }}
-          username: ${{ secrets.AZURE_VM_USERNAME }}
-          key: ${{ secrets.AZURE_VM_SSH_KEY }}
-          envs: VOTE_IMAGE,WORKER_IMAGE,RESULT_IMAGE,ACR_NAME
+          host: ${{ secrets.GCP_VM_HOST_PROD }}
+          username: ${{ secrets.GCP_VM_USERNAME }}
+          key: ${{ secrets.GCP_VM_SSH_KEY }}
+          envs: VOTE_IMAGE,WORKER_IMAGE,RESULT_IMAGE,GAR_LOCATION
           script: |
             cd /opt/microservices-demo
-            az acr login --name "$ACR_NAME"
+            gcloud auth configure-docker "$GAR_LOCATION-docker.pkg.dev" --quiet
             printf "VOTE_IMAGE=%s\nWORKER_IMAGE=%s\nRESULT_IMAGE=%s\n" \
               "$VOTE_IMAGE" "$WORKER_IMAGE" "$RESULT_IMAGE" > .env
             docker compose pull

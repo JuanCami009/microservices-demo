@@ -1,25 +1,25 @@
-name: Infra CD — Aprovisionamiento de Azure
+name: Infra CD — Aprovisionamiento de GCP
 
 # Se ejecuta cuando se hace merge a main.
 # En Trunk-based Development para operaciones, main es la fuente de verdad:
 # lo que entra al trunk se despliega automáticamente.
 #
-# Este pipeline ejecuta el script scripts/provision-azure.sh que crea o
-# actualiza de forma idempotente los recursos de Azure necesarios:
-#   - Azure Container Registry (ACR)
-#   - VMs de Azure con Docker, Docker Compose y Azure CLI instalados
-#   - Managed Identity en cada VM con rol AcrPull sobre el ACR
-#
-# El script es idempotente: puede ejecutarse múltiples veces sin efectos
-# secundarios, creando solo lo que no exista.
+# Este pipeline ejecuta el script scripts/provision-gcp.sh que crea o
+# actualiza de forma idempotente los recursos de GCP necesarios:
+#   - Google Artifact Registry (GAR) para almacenar imágenes Docker
+#   - Service Account con rol artifactregistry.reader para las VMs
+#   - Reglas de firewall para puertos 8080 y 4000
+#   - VMs de Compute Engine con Docker, Docker Compose y gcloud instalados
 #
 # Secretos requeridos:
-#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  → OIDC
+#   GCP_WORKLOAD_IDENTITY_PROVIDER → URI del proveedor Workload Identity
+#   GCP_SERVICE_ACCOUNT            → email de la SA para GitHub Actions
 #
 # Variables requeridas:
-#   AZURE_RESOURCE_GROUP   → nombre del grupo de recursos (ej. microservices-demo-rg)
-#   AZURE_LOCATION         → región de Azure (ej. eastus)
-#   ACR_NAME               → nombre del ACR (ej. microdemo)
+#   GCP_PROJECT_ID  → ID del proyecto de GCP (ej. my-project-123)
+#   GAR_LOCATION    → región del Artifact Registry (ej. us-central1)
+#   GAR_REPO        → nombre del repositorio en GAR (ej. microservices)
+#   GCE_ZONE        → zona de las VMs (ej. us-central1-a)
 on:
   push:
     branches:
@@ -28,7 +28,7 @@ on:
 jobs:
 
   provision:
-    name: Aprovisionar recursos de Azure
+    name: Aprovisionar recursos de GCP
     runs-on: ubuntu-latest
     environment: infrastructure   # Aprobación manual recomendada
     permissions:
@@ -38,28 +38,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Autenticar en Azure (OIDC)
-        uses: azure/login@v2
+      - name: Autenticar en GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Aprovisionar infraestructura de Azure
+      - name: Configurar gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Aprovisionar infraestructura de GCP
         env:
-          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-          LOCATION: ${{ vars.AZURE_LOCATION }}
-          ACR_NAME: ${{ vars.ACR_NAME }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+          GAR_REPO: ${{ vars.GAR_REPO }}
+          GCE_ZONE: ${{ vars.GCE_ZONE }}
         run: |
-          chmod +x scripts/provision-azure.sh
-          bash scripts/provision-azure.sh
+          chmod +x scripts/provision-gcp.sh
+          bash scripts/provision-gcp.sh
 
       - name: Mostrar resumen de recursos creados
         if: always()
         env:
-          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+          GCE_ZONE: ${{ vars.GCE_ZONE }}
         run: |
-          echo "### Recursos en $RESOURCE_GROUP"
-          az resource list --resource-group "$RESOURCE_GROUP" \
-            --query "[].{Nombre:name, Tipo:type, Estado:provisioningState}" \
-            --output table
+          echo "### VMs del proyecto $GCP_PROJECT_ID"
+          gcloud compute instances list \
+            --project="$GCP_PROJECT_ID" \
+            --filter="tags.items=microservices-demo" \
+            --format="table(name,zone,status,networkInterfaces[0].accessConfigs[0].natIP)"
+          echo ""
+          echo "### Repositorios de Artifact Registry"
+          gcloud artifacts repositories list \
+            --project="$GCP_PROJECT_ID" \
+            --location="$GAR_LOCATION" \
+            --format="table(name,format,location)"
