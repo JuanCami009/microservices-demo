@@ -1,0 +1,65 @@
+name: Infra CD — Aprovisionamiento de Azure
+
+# Se ejecuta cuando se hace merge a main.
+# En Trunk-based Development para operaciones, main es la fuente de verdad:
+# lo que entra al trunk se despliega automáticamente.
+#
+# Este pipeline ejecuta el script scripts/provision-azure.sh que crea o
+# actualiza de forma idempotente los recursos de Azure necesarios:
+#   - Azure Container Registry (ACR)
+#   - VMs de Azure con Docker, Docker Compose y Azure CLI instalados
+#   - Managed Identity en cada VM con rol AcrPull sobre el ACR
+#
+# El script es idempotente: puede ejecutarse múltiples veces sin efectos
+# secundarios, creando solo lo que no exista.
+#
+# Secretos requeridos:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  → OIDC
+#
+# Variables requeridas:
+#   AZURE_RESOURCE_GROUP   → nombre del grupo de recursos (ej. microservices-demo-rg)
+#   AZURE_LOCATION         → región de Azure (ej. eastus)
+#   ACR_NAME               → nombre del ACR (ej. microdemo)
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  provision:
+    name: Aprovisionar recursos de Azure
+    runs-on: ubuntu-latest
+    environment: infrastructure   # Aprobación manual recomendada
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Autenticar en Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Aprovisionar infraestructura de Azure
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          LOCATION: ${{ vars.AZURE_LOCATION }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          chmod +x scripts/provision-azure.sh
+          bash scripts/provision-azure.sh
+
+      - name: Mostrar resumen de recursos creados
+        if: always()
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          echo "### Recursos en $RESOURCE_GROUP"
+          az resource list --resource-group "$RESOURCE_GROUP" \
+            --query "[].{Nombre:name, Tipo:type, Estado:provisioningState}" \
+            --output table

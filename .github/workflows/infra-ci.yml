@@ -1,0 +1,124 @@
+name: Infra CI — Validación de infraestructura
+
+# Se ejecuta en ramas de trabajo de operaciones y en PRs hacia main.
+# Según la estrategia Trunk-based para operaciones definida en el taller:
+#   - infra/**, hotfix/infra-** → push directo activa CI
+#   - Toda PR hacia main debe pasar CI antes del merge
+#
+# Tareas:
+#   1. Validar los cuatro Helm charts con helm lint y helm template
+#   2. Escanear los Dockerfiles con Trivy en busca de errores de configuración
+#      y vulnerabilidades en las imágenes base
+on:
+  push:
+    branches:
+      - 'infra/**'
+      - 'hotfix/infra-**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  # ── 1. Validación de Helm charts ───────────────────────────────────────────
+  validate-charts:
+    name: Validar Helm charts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      # infrastructure/ — chart de Kafka y PostgreSQL (sin imagen variable)
+      - name: helm lint — infrastructure
+        run: helm lint infrastructure/
+
+      - name: helm template — infrastructure
+        run: helm template infrastructure infrastructure/ --debug > /dev/null
+
+      # vote/chart — requiere el valor "image"
+      - name: helm lint — vote
+        run: helm lint vote/chart --set image=placeholder:latest
+
+      - name: helm template — vote
+        run: helm template vote vote/chart --set image=placeholder:latest --debug > /dev/null
+
+      # result/chart
+      - name: helm lint — result
+        run: helm lint result/chart --set image=placeholder:latest
+
+      - name: helm template — result
+        run: helm template result result/chart --set image=placeholder:latest --debug > /dev/null
+
+      # worker/chart
+      - name: helm lint — worker
+        run: helm lint worker/chart --set image=placeholder:latest
+
+      - name: helm template — worker
+        run: helm template worker worker/chart --set image=placeholder:latest --debug > /dev/null
+
+  # ── 2. Escaneo de seguridad con Trivy ─────────────────────────────────────
+  scan-security:
+    name: Escaneo de seguridad (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Escaneo de configuración: detecta malas prácticas en los Dockerfiles
+      # (usuario root, COPY en lugar de ADD innecesario, secretos expuestos, etc.)
+      - name: Trivy — escaneo de configuración (Dockerfiles)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+
+      # Escaneo de la imagen runtime de vote: eclipse-temurin:22-jre-jammy
+      # (stage final en vote/Dockerfile)
+      - name: Trivy — imagen base vote
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: eclipse-temurin:22-jre-jammy
+          format: table
+          exit-code: '0'          # Informativo: no bloquea si encuentra CVEs en base
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      # Escaneo del stage de build de worker: golang:1.24.1-bookworm
+      # La imagen final de worker es FROM scratch (sin OS), por lo que se
+      # escanea el stage de build para detectar vulnerabilidades en el toolchain.
+      - name: Trivy — imagen build worker
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: golang:1.24.1-bookworm
+          format: table
+          exit-code: '0'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      # Escaneo de la imagen runtime de result: node:22.12.0-slim
+      # (única stage en result/Dockerfile)
+      - name: Trivy — imagen base result
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: node:22.12.0-slim
+          format: table
+          exit-code: '0'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Publicar reporte de Trivy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-security-report
+          path: trivy-results/
+          retention-days: 30

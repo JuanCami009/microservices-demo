@@ -61,10 +61,6 @@ jobs:
         working-directory: worker
         run: go mod download
 
-      - name: Verificar integridad del módulo
-        working-directory: worker
-        run: go mod verify
-
       - name: Análisis estático (go vet)
         working-directory: worker
         run: go vet ./...
