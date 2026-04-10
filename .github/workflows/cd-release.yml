@@ -1,19 +1,19 @@
 name: CD — Release Candidate (staging)
 
 # Se ejecuta cuando se hace push a una rama release/** o hotfix/**.
-# Publica imágenes con tag rc-<version> en ACR y despliega
-# en la VM de staging via SSH con Docker Compose.
+# Publica imágenes con tag rc-<version> en Google Artifact Registry
+# y despliega en la VM de staging via SSH con Docker Compose.
 #
 # Prerequisitos en la VM de staging: mismos que la VM de desarrollo.
 #
 # Secretos requeridos:
-#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-#   AZURE_VM_HOST_STAGING  → IP o hostname de la VM de staging
-#   AZURE_VM_USERNAME      → usuario SSH de la VM
-#   AZURE_VM_SSH_KEY       → clave SSH privada
+#   GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT
+#   GCP_VM_HOST_STAGING → IP externa de la VM de staging
+#   GCP_VM_USERNAME     → usuario SSH de la VM
+#   GCP_VM_SSH_KEY      → clave SSH privada
 #
 # Variables requeridas:
-#   ACR_LOGIN_SERVER, ACR_NAME
+#   GCP_PROJECT_ID, GAR_LOCATION, GAR_REPO
 on:
   push:
     branches:
@@ -21,7 +21,7 @@ on:
       - 'hotfix/**'
 
 env:
-  IMAGE_PREFIX: ${{ vars.ACR_LOGIN_SERVER }}
+  IMAGE_PREFIX: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPO }}
 
 jobs:
 
@@ -89,9 +89,9 @@ jobs:
       - working-directory: result
         run: npm audit --audit-level=critical
 
-  # ── 3. Construcción y publicación de imágenes RC en ACR ───────────────────
+  # ── 3. Construcción y publicación de imágenes RC en Artifact Registry ───────
   build-and-push:
-    name: Construir y publicar imágenes RC en ACR
+    name: Construir y publicar imágenes RC en GAR
     runs-on: ubuntu-latest
     needs: [extract-version, test-vote, test-worker, build-result]
     permissions:
@@ -101,15 +101,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Autenticar en Azure (OIDC)
-        uses: azure/login@v2
+      - name: Autenticar en GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Login en Azure Container Registry
-        run: az acr login --name ${{ vars.ACR_NAME }}
+      - name: Configurar Docker para Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GAR_LOCATION }}-docker.pkg.dev --quiet
 
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -157,9 +156,9 @@ jobs:
       - name: Copiar docker-compose.yml a la VM de staging
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.AZURE_VM_HOST_STAGING }}
-          username: ${{ secrets.AZURE_VM_USERNAME }}
-          key: ${{ secrets.AZURE_VM_SSH_KEY }}
+          host: ${{ secrets.GCP_VM_HOST_STAGING }}
+          username: ${{ secrets.GCP_VM_USERNAME }}
+          key: ${{ secrets.GCP_VM_SSH_KEY }}
           source: docker-compose.yml
           target: /opt/microservices-demo/
 
@@ -169,15 +168,15 @@ jobs:
           VOTE_IMAGE: ${{ env.IMAGE_PREFIX }}/vote:${{ needs.extract-version.outputs.version }}
           WORKER_IMAGE: ${{ env.IMAGE_PREFIX }}/worker:${{ needs.extract-version.outputs.version }}
           RESULT_IMAGE: ${{ env.IMAGE_PREFIX }}/result:${{ needs.extract-version.outputs.version }}
-          ACR_NAME: ${{ vars.ACR_NAME }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
         with:
-          host: ${{ secrets.AZURE_VM_HOST_STAGING }}
-          username: ${{ secrets.AZURE_VM_USERNAME }}
-          key: ${{ secrets.AZURE_VM_SSH_KEY }}
-          envs: VOTE_IMAGE,WORKER_IMAGE,RESULT_IMAGE,ACR_NAME
+          host: ${{ secrets.GCP_VM_HOST_STAGING }}
+          username: ${{ secrets.GCP_VM_USERNAME }}
+          key: ${{ secrets.GCP_VM_SSH_KEY }}
+          envs: VOTE_IMAGE,WORKER_IMAGE,RESULT_IMAGE,GAR_LOCATION
           script: |
             cd /opt/microservices-demo
-            az acr login --name "$ACR_NAME"
+            gcloud auth configure-docker "$GAR_LOCATION-docker.pkg.dev" --quiet
             printf "VOTE_IMAGE=%s\nWORKER_IMAGE=%s\nRESULT_IMAGE=%s\n" \
               "$VOTE_IMAGE" "$WORKER_IMAGE" "$RESULT_IMAGE" > .env
             docker compose pull
