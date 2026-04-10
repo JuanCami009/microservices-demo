@@ -307,7 +307,54 @@ Sharik Camila Rueda Lucero
 
    Se agrega el plugin `spotbugs-maven-plugin` versión `4.8.3.1` en la sección `<build><plugins>`. La configuración usa `threshold=High` para reportar únicamente bugs de severidad alta o superior, evitando falsos positivos en código que usa frameworks como Spring Boot. El análisis se invoca con `mvn spotbugs:check` y detiene el pipeline si encuentra algún bug bajo el umbral configurado.
 
-7. Pipelines de infraestructura (incluidos los scripts para las tareas que lo necesiten)  
+7. Pipelines de infraestructura (incluidos los scripts para las tareas que lo necesiten)
+
+   Los pipelines de infraestructura se implementan como GitHub Actions en `.github/workflows/` y un script de aprovisionamiento en `scripts/`. Están alineados con la estrategia Trunk-based Development para operaciones del punto 3: las ramas `infra/**` activan validación automática, y el merge a `main` dispara el aprovisionamiento.
+
+   **Resumen de los dos pipelines**
+
+   | Archivo | Disparador | Propósito |
+   |---|---|---|
+   | `infra-ci.yml` | Push a `infra/**`, `hotfix/infra-**`; PR hacia `main` | Validación de Helm charts + escaneo de seguridad con Trivy |
+   | `infra-cd.yml` | Push a `main` | Aprovisionamiento idempotente de recursos Azure vía `scripts/provision-azure.sh` |
+
+   **Pipeline 1 — Infra CI (`.github/workflows/infra-ci.yml`)**
+
+   Corresponde al paso 4 del flujo de operaciones: *"el pipeline de infraestructura se ejecuta automáticamente: validación de Helm charts, escaneo de seguridad de imágenes Docker"*. Se activa en cualquier rama `infra/**` y en todas las PRs hacia `main`.
+
+   *Trabajos paralelos:*
+
+   **validate-charts**: instala Helm con la acción `azure/setup-helm` y valida los cuatro charts del repositorio. Para cada uno ejecuta dos comandos: `helm lint` detecta errores de sintaxis YAML y valores incorrectos en el chart; `helm template` renderiza el chart completo para verificar que los templates se evalúen sin errores. Los charts `vote`, `result` y `worker` reciben `--set image=placeholder:latest` ya que requieren ese valor para renderizarse, mientras que `infrastructure/` no lo necesita. El job falla si cualquiera de los ocho comandos devuelve error.
+
+   **scan-security**: ejecuta **Trivy** (Aqua Security) en dos modalidades. Primero, un escaneo de configuración (`trivy config`) sobre todos los Dockerfiles del repositorio detectando malas prácticas como ejecución como root, uso innecesario de ADD, o secretos expuestos en capas — este escaneo sí bloquea el pipeline (`exit-code: 1`) ante hallazgos CRITICAL o HIGH. Segundo, un escaneo de vulnerabilidades (`trivy image`) sobre las imágenes base de cada servicio (`eclipse-temurin:22-jre`, `golang:1.24-alpine`, `node:22-alpine`) que reporta CVEs conocidos con parche disponible de forma informativa sin bloquear, ya que las vulnerabilidades en imágenes base upstream no son bloqueantes hasta que exista una versión parcheada. Los reportes se guardan como artefactos con retención de 30 días.
+
+   **Pipeline 2 — Infra CD (`.github/workflows/infra-cd.yml`)**
+
+   Se ejecuta en cada merge a `main`. Autentica con Azure vía OIDC y ejecuta `scripts/provision-azure.sh`. Está asociado al ambiente `infrastructure` de GitHub Environments, lo que permite configurar una aprobación manual si se quiere mayor control sobre cuándo se aplican cambios de infraestructura.
+
+   Al finalizar, el pipeline muestra un resumen de todos los recursos en el grupo de recursos usando `az resource list`, lo que sirve como registro de auditoría de qué se aprovisionó y cuándo.
+
+   **Script de aprovisionamiento (`scripts/provision-azure.sh`)**
+
+   Script Bash idempotente que crea o verifica la existencia de cada recurso antes de actuar. Recibe configuración por variables de entorno (`RESOURCE_GROUP`, `LOCATION`, `ACR_NAME`). Ejecuta cuatro etapas numeradas:
+
+   **[1/4] Grupo de recursos**: `az group create` con `--location`. Si ya existe, Azure CLI lo confirma sin error.
+
+   **[2/4] Azure Container Registry**: verifica existencia con `az acr show` antes de crear. Crea el ACR en SKU Basic con `--admin-enabled false` (la autenticación se hace via Managed Identity, no con credenciales de admin).
+
+   **[3/4] VMs de Azure**: itera sobre los tres ambientes (`dev`, `staging`, `prod`). Para cada uno: crea la VM con Ubuntu 24.04 y `--assign-identity '[system]'` para habilitar la Managed Identity; abre los puertos 8080 (vote) y 4000 (result); asigna el rol `AcrPull` sobre el ACR a la Managed Identity de la VM (verificando primero si ya está asignado); e instala Docker, Docker Compose plugin y Azure CLI dentro de la VM usando `az vm run-command invoke`. Todas las operaciones verifican si ya existen antes de ejecutarse.
+
+   **[4/4] Resumen**: imprime las IPs públicas de las tres VMs con las URLs de acceso a cada servicio, e indica los próximos pasos para configurar los secretos de GitHub (`AZURE_VM_HOST_DEV/STAGING/PROD`, `AZURE_VM_SSH_KEY`).
+
+   **Variables y secretos adicionales para los pipelines de infraestructura**
+
+   | Nombre | Tipo | Uso |
+   |---|---|---|
+   | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Secretos | OIDC para autenticación en `infra-cd.yml` |
+   | `AZURE_RESOURCE_GROUP` | Variable | Nombre del grupo de recursos de Azure |
+   | `AZURE_LOCATION` | Variable | Región de Azure donde se crean los recursos (ej. `eastus`) |
+   | `ACR_NAME` | Variable | Nombre del ACR (mismo que usan los pipelines de desarrollo) |
+
 8. Implementación de la infraestructura  
 9. Demostración en vivo de cambios en el pipeline  
    

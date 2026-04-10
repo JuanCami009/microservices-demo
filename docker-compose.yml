@@ -15,7 +15,7 @@ services:
   result:
     image: ${RESULT_IMAGE}
     ports:
-      - "4000:4000"
+      - "4000:80"    # El Dockerfile establece ENV PORT=80; se expone en host:4000
     depends_on:
       postgresql:
         condition: service_healthy
