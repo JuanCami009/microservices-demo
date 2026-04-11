@@ -18,7 +18,7 @@ Sharik Camila Rueda Lucero
      
    **Ramas permanentes**  
      
-   **master** contiene exclusivamente el código de producción etiquetado. Todo lo que llega aquí ha pasado por el ciclo completo de integración y pruebas. Está protegida: solo reciben merge las ramas **release/** y **hotfix/**. Cada merge a master lleva un tag de versión (**v1.0.0, v1.1.0, etc.**) que el equipo de operaciones usa para actualizar el tag de imagen en los charts de Helm.  
+   **main** contiene exclusivamente el código de producción etiquetado. Todo lo que llega aquí ha pasado por el ciclo completo de integración y pruebas. Está protegida: solo reciben merge las ramas **release/** y **hotfix/**. Cada merge a main lleva un tag de versión (**v1.0.0, v1.1.0, etc.**) que el equipo de operaciones usa para actualizar el tag de imagen en los charts de Helm.  
      
    **develop** es la rama de integración continua del equipo de desarrollo. Aquí convergen todas las features terminadas del sprint. Es la fuente de verdad del estado actual del desarrollo y el punto desde donde se crean las ramas de release al cierre de cada sprint.
 
@@ -51,7 +51,7 @@ Sharik Camila Rueda Lucero
   **Ejemplo:** release/SPRINT-02-v1.2.0
 
 
-  Se crea desde **develop** al final del sprint, una vez que todas las historias del sprint están mergeadas. En esta rama solo se permiten correcciones de bugs detectados en la sprint review o en las pruebas finales, no features nuevas. Una vez estabilizada, se mergea tanto a **master** (con su tag de versión) como de vuelta a **develop** para mantener consistencia. Esto mapea directamente con la sprint review de Scrum: la rama **release/** es el incremento del sprint que se demuestra al Product Owner.
+  Se crea desde **develop** al final del sprint, una vez que todas las historias del sprint están mergeadas. En esta rama solo se permiten correcciones de bugs detectados en la sprint review o en las pruebas finales, no features nuevas. Una vez estabilizada, se mergea tanto a **main** (con su tag de versión) como de vuelta a **develop** para mantener consistencia. Esto mapea directamente con la sprint review de Scrum: la rama **release/** es el incremento del sprint que se demuestra al Product Owner.
 
 
   **Ramas de hotfix \- para bugs críticos en producción:**
@@ -63,7 +63,7 @@ Sharik Camila Rueda Lucero
   **Ejemplo:** hotfix/v1.2.1-worker-restart-clears-votes
 
 
-  Nacen desde **master**, corrigen el problema mínimo necesario y se mergean tanto a **master** (con nuevo tag) como a **develop** para que el fix quede incorporado en el flujo normal de desarrollo.
+  Nacen desde **main**, corrigen el problema mínimo necesario y se mergean tanto a **main** (con nuevo tag) como a **develop** para que el fix quede incorporado en el flujo normal de desarrollo.
 
   **Flujo del desarrollador dentro del sprint**
 
@@ -76,7 +76,7 @@ Sharik Camila Rueda Lucero
 6. Un compañero del equipo aprueba el PR mediante peer review.  
 7. Se hace merge a **develop** y se elimina la rama de feature.  
 8. Al cierre del sprint, el Scrum Master o Tech Lead crea la rama **release/** desde **develop**.  
-9. Se estabiliza, se mergea a **master** con tag y de vuelta a **develop**.  
+9. Se estabiliza, se mergea a **main** con tag y de vuelta a **develop**.  
      
      
 3. Estrategia de branching para operaciones  
@@ -194,14 +194,14 @@ Sharik Camila Rueda Lucero
 
    | Archivo | Disparador | Propósito |
    |---|---|---|
-   | `ci.yml` | Push a `feature/**`, `hotfix/**`; PR hacia `develop` o `master` | Validación de rama: build + tests + análisis estático |
+   | `ci.yml` | Push a `feature/**`, `hotfix/**`; PR hacia `develop` o `main` | Validación de rama: build + tests + análisis estático |
    | `cd-develop.yml` | Push a `develop` | Build Docker + publicación en GAR + deploy a VM de desarrollo vía SSH con Docker Compose |
    | `cd-release.yml` | Push a `release/**` o `hotfix/**` | Build RC + publicación con tag `rc-X.Y.Z` + deploy a VM de staging vía SSH con Docker Compose |
-   | `cd-production.yml` | Push de tag `vX.Y.Z` a `master` | Build producción + publicación en GAR + deploy a VM de producción vía SSH con Docker Compose |
+   | `cd-production.yml` | Push de tag `vX.Y.Z` a `main` | Build producción + publicación en GAR + deploy a VM de producción vía SSH con Docker Compose |
 
    **Pipeline 1 — CI (`.github/workflows/ci.yml`)**
 
-   Corresponde al paso 5 del flujo del desarrollador dentro del sprint: *"el pipeline CI se ejecuta automáticamente: build, tests unitarios, análisis estático de código"*. Se activa en cualquier rama de feature y en todas las PRs antes de que puedan mergearse a `develop` o `master`.
+   Corresponde al paso 5 del flujo del desarrollador dentro del sprint: *"el pipeline CI se ejecuta automáticamente: build, tests unitarios, análisis estático de código"*. Se activa en cualquier rama de feature y en todas las PRs antes de que puedan mergearse a `develop` o `main`.
 
    *Trabajos paralelos:*
 
@@ -231,13 +231,13 @@ Sharik Camila Rueda Lucero
 
    **Pipeline 4 — CD Producción (`.github/workflows/cd-production.yml`)**
 
-   Se activa únicamente cuando se hace push de un tag con formato `vX.Y.Z`. Esto ocurre cuando el Tech Lead mergea la rama `release/**` a `master` y crea el tag de versión:
+   Se activa únicamente cuando se hace push de un tag con formato `vX.Y.Z`. Esto ocurre cuando el Tech Lead mergea la rama `release/**` a `main` y crea el tag de versión:
 
    ```bash
-   git checkout master
+   git checkout main
    git merge --no-ff release/SPRINT-02-v1.2.0
    git tag -a v1.2.0 -m "Release v1.2.0 — Sprint 02"
-   git push origin master --tags
+   git push origin main --tags
    ```
 
    **build-and-push**: extrae la versión quitando el prefijo `v` del nombre del tag (e.g. `v1.2.0` → `1.2.0`) y publica cada imagen en GAR con dos tags: el número de versión exacto y `latest`.

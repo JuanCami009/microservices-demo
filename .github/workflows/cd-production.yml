@@ -1,12 +1,12 @@
 name: CD — Producción
 
-# Se ejecuta cuando se hace push de un tag vX.Y.Z a master.
-# En Git Flow, este tag se crea al mergear la rama release/** a master:
+# Se ejecuta cuando se hace push de un tag vX.Y.Z a main.
+# En Git Flow, este tag se crea al mergear la rama release/** a main:
 #
-#   git checkout master
+#   git checkout main
 #   git merge --no-ff release/SPRINT-02-v1.2.0
 #   git tag -a v1.2.0 -m "Release v1.2.0 — Sprint 02"
-#   git push origin master --tags
+#   git push origin main --tags
 #
 # Publica imágenes con tag de versión definitivo en Google Artifact Registry
 # y despliega en la VM de producción via SSH con Docker Compose.

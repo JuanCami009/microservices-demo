@@ -3,7 +3,7 @@ name: CI — Validación de rama
 # Se ejecuta en ramas de trabajo y en PRs hacia las ramas permanentes.
 # Según la estrategia Git Flow definida para el equipo de desarrollo:
 #   - feature/**, hotfix/** → push directo activa CI
-#   - Toda PR hacia develop o master debe pasar CI antes del merge
+#   - Toda PR hacia develop o main debe pasar CI antes del merge
 on:
   push:
     branches:
@@ -12,7 +12,7 @@ on:
   pull_request:
     branches:
       - develop
-      - master
+      - main
 
 jobs:
 
