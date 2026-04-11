@@ -195,9 +195,9 @@ Sharik Camila Rueda Lucero
    | Archivo | Disparador | Propósito |
    |---|---|---|
    | `ci.yml` | Push a `feature/**`, `hotfix/**`; PR hacia `develop` o `master` | Validación de rama: build + tests + análisis estático |
-   | `cd-develop.yml` | Push a `develop` | Build Docker + publicación en ACR + deploy a VM de desarrollo vía SSH con Docker Compose |
+   | `cd-develop.yml` | Push a `develop` | Build Docker + publicación en GAR + deploy a VM de desarrollo vía SSH con Docker Compose |
    | `cd-release.yml` | Push a `release/**` o `hotfix/**` | Build RC + publicación con tag `rc-X.Y.Z` + deploy a VM de staging vía SSH con Docker Compose |
-   | `cd-production.yml` | Push de tag `vX.Y.Z` a `master` | Build producción + publicación en ACR + deploy a VM de producción vía SSH con Docker Compose |
+   | `cd-production.yml` | Push de tag `vX.Y.Z` a `master` | Build producción + publicación en GAR + deploy a VM de producción vía SSH con Docker Compose |
 
    **Pipeline 1 — CI (`.github/workflows/ci.yml`)**
 
@@ -215,9 +215,9 @@ Sharik Camila Rueda Lucero
 
    Se ejecuta automáticamente en cada merge a `develop`. Reutiliza los mismos tres trabajos de CI y, una vez que los tres pasan, ejecuta dos trabajos adicionales secuencialmente:
 
-   **build-and-push**: autentica en Azure mediante OIDC (sin secretos de larga vida), hace login al Azure Container Registry con `az acr login`, configura Docker Buildx y construye las tres imágenes en paralelo. Publica cada imagen con dos tags: `dev-latest` y `dev-<sha>`, donde `<sha>` es el SHA del commit para trazabilidad. Usa caché de capas de Docker (`type=gha`) para acelerar builds sucesivos.
+   **build-and-push**: autentica en GCP mediante Workload Identity Federation (sin secretos de larga vida), configura Docker para Artifact Registry con `gcloud auth configure-docker`, configura Docker Buildx y construye las tres imágenes en paralelo. Publica cada imagen con dos tags: `dev-latest` y `dev-<sha>`, donde `<sha>` es el SHA del commit para trazabilidad. Usa caché de capas de Docker (`type=gha`) para acelerar builds sucesivos.
 
-   **deploy-dev**: copia el `docker-compose.yml` a la VM de desarrollo usando `appleboy/scp-action`, luego conecta por SSH con `appleboy/ssh-action` y ejecuta: autentica Docker con ACR usando la Managed Identity de la VM (`az acr login`), escribe un archivo `.env` con los tags de imagen del deploy actual y ejecuta `docker compose pull && docker compose up -d --remove-orphans`.
+   **deploy-dev**: copia el `docker-compose.yml` a la VM de desarrollo usando `appleboy/scp-action`, luego conecta por SSH con `appleboy/ssh-action` y ejecuta: autentica Docker con Artifact Registry usando la Service Account adjunta a la VM (`gcloud auth configure-docker`), escribe un archivo `.env` con los tags de imagen del deploy actual y ejecuta `docker compose pull && docker compose up -d --remove-orphans`.
 
    **`docker-compose.yml`**: define los cinco servicios del stack. Los tres servicios de aplicación (`vote`, `result`, `worker`) leen sus imágenes desde variables de entorno (`${VOTE_IMAGE}`, `${RESULT_IMAGE}`, `${WORKER_IMAGE}`) que el pipeline escribe en el `.env` antes de cada deploy. Los dos servicios de infraestructura usan imágenes fijas: `apache/kafka:3.9.0` en modo KRaft (sin Zookeeper) y `postgres:17`. Ambos tienen `healthcheck` configurado para que los servicios de aplicación esperen a que estén listos antes de iniciar (`depends_on: condition: service_healthy`). Los nombres de servicio `kafka` y `postgresql` coinciden exactamente con los que el código tiene hardcodeados.
 
@@ -227,7 +227,7 @@ Sharik Camila Rueda Lucero
 
    **extract-version**: parsea el nombre de la rama con expresión regular `v\d+\.\d+\.\d+` para extraer la versión. Por ejemplo `release/SPRINT-02-v1.2.0` produce el tag de imagen `rc-1.2.0`. Si no se encuentra el patrón, el pipeline falla con error descriptivo.
 
-   Los trabajos de CI se repiten para garantizar que el código estabilizado de la rama release sigue pasando todas las validaciones. El trabajo **build-and-push** publica en ACR con el tag `rc-X.Y.Z`. El trabajo **deploy-staging** conecta a la VM de staging (`AZURE_VM_HOST_STAGING`) por SSH y ejecuta el mismo script de Docker Compose con las imágenes RC. El ambiente `staging` puede configurarse en GitHub Environments para requerir aprobación antes del deploy.
+   Los trabajos de CI se repiten para garantizar que el código estabilizado de la rama release sigue pasando todas las validaciones. El trabajo **build-and-push** publica en GAR con el tag `rc-X.Y.Z`. El trabajo **deploy-staging** conecta a la VM de staging (`GCP_VM_HOST_STAGING`) por SSH y ejecuta el mismo script de Docker Compose con las imágenes RC. El ambiente `staging` puede configurarse en GitHub Environments para requerir aprobación antes del deploy.
 
    **Pipeline 4 — CD Producción (`.github/workflows/cd-production.yml`)**
 
@@ -240,67 +240,70 @@ Sharik Camila Rueda Lucero
    git push origin master --tags
    ```
 
-   **build-and-push**: extrae la versión quitando el prefijo `v` del nombre del tag (e.g. `v1.2.0` → `1.2.0`) y publica cada imagen en ACR con dos tags: el número de versión exacto y `latest`.
+   **build-and-push**: extrae la versión quitando el prefijo `v` del nombre del tag (e.g. `v1.2.0` → `1.2.0`) y publica cada imagen en GAR con dos tags: el número de versión exacto y `latest`.
 
    **deploy-production**: está asociado al ambiente `production` de GitHub Environments, lo que permite configurar una aprobación manual obligatoria antes de que se ejecute. Conecta a la VM de producción por SSH, ejecuta el mismo script de Docker Compose con las imágenes versionadas y crea un Release en GitHub con las referencias exactas a las imágenes desplegadas.
 
-   **Infraestructura de Azure necesaria**
+   **Infraestructura de GCP necesaria**
 
-   Los pipelines de deploy asumen que los siguientes recursos de Azure ya existen (se provisiona en el punto 8):
+   Los pipelines de deploy asumen que los siguientes recursos de GCP ya existen (se provisiona en el punto 8):
 
    | Recurso | Propósito |
    |---|---|
-   | Azure Container Registry (ACR) | Almacén de imágenes Docker de los tres servicios |
-   | Azure VM (una por ambiente: dev, staging, prod) | Máquinas donde corre Docker Compose con el stack completo |
-   | Managed Identity en cada VM | Permite que la VM haga `az acr login` sin credenciales explícitas (rol `AcrPull` sobre el ACR) |
-   | Service Principal con OIDC | Identidad que usan los pipelines de GitHub Actions para hacer push al ACR (rol `AcrPush`) |
+   | Google Artifact Registry (GAR) | Almacén de imágenes Docker de los tres servicios |
+   | GCP Compute Engine VM (una por ambiente: dev, staging, prod) | Máquinas donde corre Docker Compose con el stack completo |
+   | Service Account `vm-gar-reader` adjunta a cada VM | Permite que la VM ejecute `gcloud auth configure-docker` sin credenciales explícitas (rol `roles/artifactregistry.reader`) |
+   | Workload Identity Federation + Service Account para GitHub Actions | Identidad que usan los pipelines de GitHub Actions para hacer push al GAR (sin secretos de larga vida) |
 
    Nota: si el presupuesto es limitado, las tres VMs pueden ser la misma máquina usando `docker compose --project-name dev/staging/prod` para mantener los stacks aislados, ajustando los puertos para evitar conflictos.
 
-   **Autenticación OIDC con Azure (sin secretos de larga vida)**
+   **Autenticación con GCP mediante Workload Identity Federation (sin secretos de larga vida)**
 
-   Los tres pipelines de deploy usan la acción `azure/login@v2` con federación de identidad (OIDC) en lugar de almacenar credenciales como secreto. El flujo es: GitHub genera un token JWT firmado → Azure AD lo valida contra el federated credential configurado → se emite un token de acceso de corta duración. Esto elimina la rotación manual de contraseñas de service principal.
+   Los tres pipelines de deploy usan la acción `google-github-actions/auth@v2` con Workload Identity Federation (OIDC) en lugar de almacenar credenciales como secreto. El flujo es: GitHub genera un token JWT firmado → GCP IAM lo valida contra el proveedor de identidad configurado → se emite un token de acceso de corta duración. Esto elimina la rotación manual de claves de service account.
 
-   Para configurar la federación se ejecuta una vez:
+   Para configurar la federación se ejecuta una vez desde Google Cloud Shell:
 
    ```bash
-   # 1. Crear el service principal
-   az ad sp create-for-rbac --name "github-microservices-demo" --sdk-auth
+   # Variables
+   PROJECT_ID="mi-proyecto"
+   GITHUB_USER="mi-usuario"
+   REPO_NAME="microservices-demo"
+   POOL_NAME="github-pool"
+   PROVIDER_NAME="github-provider"
+   SA_NAME="github-actions-sa"
 
-   # 2. Obtener el Object ID de la aplicación
-   APP_ID=$(az ad app list --display-name "github-microservices-demo" --query "[0].appId" -o tsv)
+   # 1. Crear Workload Identity Pool
+   gcloud iam workload-identity-pools create "$POOL_NAME" --project="$PROJECT_ID" --location="global" --display-name="GitHub Actions Pool"
 
-   # 3. Agregar federated credential para la rama develop
-   az ad app federated-credential create --id $APP_ID --parameters '{
-     "name": "github-develop",
-     "issuer": "https://token.actions.githubusercontent.com",
-     "subject": "repo:<owner>/microservices-demo:ref:refs/heads/develop",
-     "audiences": ["api://AzureADTokenExchange"]
-   }'
+   # 2. Crear el proveedor OIDC en el pool
+   POOL_ID=$(gcloud iam workload-identity-pools describe "$POOL_NAME" --project="$PROJECT_ID" --location="global" --format="value(name)")
+   gcloud iam workload-identity-pools providers create-oidc "$PROVIDER_NAME" --project="$PROJECT_ID" --location="global" --workload-identity-pool="$POOL_NAME" --issuer-uri="https://token.actions.githubusercontent.com" --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" --attribute-condition="attribute.repository=='$GITHUB_USER/$REPO_NAME'"
 
-   # 4. Asignar roles (AcrPush en el ACR, AKS RBAC Writer en el clúster)
-   az role assignment create --assignee $APP_ID --role AcrPush --scope <acr-resource-id>
-   az role assignment create --assignee $APP_ID --role "Azure Kubernetes Service RBAC Writer" --scope <aks-resource-id>
+   # 3. Crear Service Account para GitHub Actions
+   gcloud iam service-accounts create "$SA_NAME" --project="$PROJECT_ID" --display-name="GitHub Actions SA"
+   SA_EMAIL="$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+
+   # 4. Asignar permisos de push al Artifact Registry
+   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA_EMAIL" --role="roles/artifactregistry.writer"
+
+   # 5. Vincular GitHub Actions con la Service Account
+   gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" --project="$PROJECT_ID" --role="roles/iam.workloadIdentityUser" --member="principalSet://iam.googleapis.com/$POOL_ID/attribute.repository/$GITHUB_USER/$REPO_NAME"
    ```
-
-   Repetir el paso 3 para cada rama/tag que necesite deploy (`release/**`, tags `v*`).
 
    **Secretos y variables necesarios en el repositorio de GitHub**
 
    | Nombre | Tipo | Uso |
    |---|---|---|
-   | `AZURE_CLIENT_ID` | Secreto | App ID del service principal para autenticación OIDC |
-   | `AZURE_TENANT_ID` | Secreto | Tenant ID de Azure AD |
-   | `AZURE_SUBSCRIPTION_ID` | Secreto | ID de la suscripción de Azure |
-   | `ACR_LOGIN_SERVER` | Variable | URL del ACR, ej. `microdemo.azurecr.io` |
-   | `ACR_NAME` | Variable | Nombre corto del ACR, ej. `microdemo` |
-   | `AZURE_VM_HOST_DEV` | Secreto | IP o hostname de la VM de desarrollo |
-   | `AZURE_VM_HOST_STAGING` | Secreto | IP o hostname de la VM de staging |
-   | `AZURE_VM_HOST_PROD` | Secreto | IP o hostname de la VM de producción |
-   | `AZURE_VM_USERNAME` | Secreto | Usuario SSH de las VMs (ej. `azureuser`) |
-   | `AZURE_VM_SSH_KEY` | Secreto | Clave SSH privada para acceder a las VMs |
-   | `ACR_LOGIN_SERVER` | Variable | URL del ACR, ej. `microdemo.azurecr.io` |
-   | `ACR_NAME` | Variable | Nombre corto del ACR, ej. `microdemo` |
+   | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Secreto | URI completo del proveedor Workload Identity (ej. `projects/123/locations/global/workloadIdentityPools/github-pool/providers/github-provider`) |
+   | `GCP_SERVICE_ACCOUNT` | Secreto | Email de la Service Account para GitHub Actions (ej. `github-actions-sa@proyecto.iam.gserviceaccount.com`) |
+   | `GCP_VM_HOST_DEV` | Secreto | IP externa de la VM de desarrollo |
+   | `GCP_VM_HOST_STAGING` | Secreto | IP externa de la VM de staging |
+   | `GCP_VM_HOST_PROD` | Secreto | IP externa de la VM de producción |
+   | `GCP_VM_USERNAME` | Secreto | Usuario SSH de las VMs (ej. `ubuntu`) |
+   | `GCP_VM_SSH_KEY` | Secreto | Clave SSH privada para acceder a las VMs |
+   | `GCP_PROJECT_ID` | Variable | ID del proyecto de GCP (ej. `my-project-123`) |
+   | `GAR_LOCATION` | Variable | Región del Artifact Registry (ej. `us-central1`) |
+   | `GAR_REPO` | Variable | Nombre del repositorio en GAR (ej. `microservices`) |
    | `GITHUB_TOKEN` | Automático | Creación de GitHub Releases (lo provee GitHub Actions) |
 
    **Análisis estático — configuración en `vote/pom.xml`**
@@ -316,7 +319,7 @@ Sharik Camila Rueda Lucero
    | Archivo | Disparador | Propósito |
    |---|---|---|
    | `infra-ci.yml` | Push a `infra/**`, `hotfix/infra-**`; PR hacia `main` | Validación de Helm charts + escaneo de seguridad con Trivy |
-   | `infra-cd.yml` | Push a `main` | Aprovisionamiento idempotente de recursos Azure vía `scripts/provision-azure.sh` |
+   | `infra-cd.yml` | Push a `main` | Aprovisionamiento idempotente de recursos GCP vía `scripts/provision-gcp.sh` |
 
    **Pipeline 1 — Infra CI (`.github/workflows/infra-ci.yml`)**
 
@@ -324,36 +327,43 @@ Sharik Camila Rueda Lucero
 
    *Trabajos paralelos:*
 
-   **validate-charts**: instala Helm con la acción `azure/setup-helm` y valida los cuatro charts del repositorio. Para cada uno ejecuta dos comandos: `helm lint` detecta errores de sintaxis YAML y valores incorrectos en el chart; `helm template` renderiza el chart completo para verificar que los templates se evalúen sin errores. Los charts `vote`, `result` y `worker` reciben `--set image=placeholder:latest` ya que requieren ese valor para renderizarse, mientras que `infrastructure/` no lo necesita. El job falla si cualquiera de los ocho comandos devuelve error.
+   **validate-charts**: instala Helm con la acción `azure/setup-helm@v4` y valida los cuatro charts del repositorio. Para cada uno ejecuta dos comandos: `helm lint` detecta errores de sintaxis YAML y valores incorrectos en el chart; `helm template` renderiza el chart completo para verificar que los templates se evalúen sin errores. Los charts `vote`, `result` y `worker` reciben `--set image=placeholder:latest` ya que requieren ese valor para renderizarse, mientras que `infrastructure/` no lo necesita. El job falla si cualquiera de los ocho comandos devuelve error.
 
    **scan-security**: ejecuta **Trivy** (Aqua Security) en dos modalidades. Primero, un escaneo de configuración (`trivy config`) sobre todos los Dockerfiles del repositorio detectando malas prácticas como ejecución como root, uso innecesario de ADD, o secretos expuestos en capas — este escaneo sí bloquea el pipeline (`exit-code: 1`) ante hallazgos CRITICAL o HIGH. Segundo, un escaneo de vulnerabilidades (`trivy image`) sobre las imágenes base de cada servicio (`eclipse-temurin:22-jre`, `golang:1.24-alpine`, `node:22-alpine`) que reporta CVEs conocidos con parche disponible de forma informativa sin bloquear, ya que las vulnerabilidades en imágenes base upstream no son bloqueantes hasta que exista una versión parcheada. Los reportes se guardan como artefactos con retención de 30 días.
 
    **Pipeline 2 — Infra CD (`.github/workflows/infra-cd.yml`)**
 
-   Se ejecuta en cada merge a `main`. Autentica con Azure vía OIDC y ejecuta `scripts/provision-azure.sh`. Está asociado al ambiente `infrastructure` de GitHub Environments, lo que permite configurar una aprobación manual si se quiere mayor control sobre cuándo se aplican cambios de infraestructura.
+   Se ejecuta en cada merge a `main`. Autentica con GCP mediante Workload Identity Federation y ejecuta `scripts/provision-gcp.sh`. Está asociado al ambiente `infrastructure` de GitHub Environments, lo que permite configurar una aprobación manual si se quiere mayor control sobre cuándo se aplican cambios de infraestructura.
 
-   Al finalizar, el pipeline muestra un resumen de todos los recursos en el grupo de recursos usando `az resource list`, lo que sirve como registro de auditoría de qué se aprovisionó y cuándo.
+   Al finalizar, el pipeline muestra un resumen de las VMs y repositorios creados usando `gcloud compute instances list` y `gcloud artifacts repositories list`, lo que sirve como registro de auditoría de qué se aprovisionó y cuándo.
 
-   **Script de aprovisionamiento (`scripts/provision-azure.sh`)**
+   **Script de aprovisionamiento (`scripts/provision-gcp.sh`)**
 
-   Script Bash idempotente que crea o verifica la existencia de cada recurso antes de actuar. Recibe configuración por variables de entorno (`RESOURCE_GROUP`, `LOCATION`, `ACR_NAME`). Ejecuta cuatro etapas numeradas:
+   Script Bash idempotente que crea o verifica la existencia de cada recurso antes de actuar. Recibe configuración por variables de entorno (`GCP_PROJECT_ID`, `GAR_LOCATION`, `GAR_REPO`, `GCE_ZONE`). Ejecuta seis etapas numeradas:
 
-   **[1/4] Grupo de recursos**: `az group create` con `--location`. Si ya existe, Azure CLI lo confirma sin error.
+   **[1/6] APIs de GCP**: habilita las APIs necesarias (`compute.googleapis.com`, `artifactregistry.googleapis.com`, `iam.googleapis.com`) con `gcloud services enable`.
 
-   **[2/4] Azure Container Registry**: verifica existencia con `az acr show` antes de crear. Crea el ACR en SKU Basic con `--admin-enabled false` (la autenticación se hace via Managed Identity, no con credenciales de admin).
+   **[2/6] Google Artifact Registry**: verifica existencia con `gcloud artifacts repositories describe` antes de crear. Crea el repositorio en formato Docker en la región especificada.
 
-   **[3/4] VMs de Azure**: itera sobre los tres ambientes (`dev`, `staging`, `prod`). Para cada uno: crea la VM con Ubuntu 24.04 y `--assign-identity '[system]'` para habilitar la Managed Identity; abre los puertos 8080 (vote) y 4000 (result); asigna el rol `AcrPull` sobre el ACR a la Managed Identity de la VM (verificando primero si ya está asignado); e instala Docker, Docker Compose plugin y Azure CLI dentro de la VM usando `az vm run-command invoke`. Todas las operaciones verifican si ya existen antes de ejecutarse.
+   **[3/6] Service Account para VMs**: crea la SA `vm-gar-reader` y le asigna el rol `roles/artifactregistry.reader` sobre el repositorio GAR, permitiendo que las VMs hagan `gcloud auth configure-docker` sin credenciales explícitas.
 
-   **[4/4] Resumen**: imprime las IPs públicas de las tres VMs con las URLs de acceso a cada servicio, e indica los próximos pasos para configurar los secretos de GitHub (`AZURE_VM_HOST_DEV/STAGING/PROD`, `AZURE_VM_SSH_KEY`).
+   **[4/6] Clave SSH**: genera un par de claves SSH `ed25519` para que GitHub Actions pueda conectarse a las VMs vía SSH. Si se ejecuta en GitHub Actions (`GITHUB_ACTIONS=true`), este paso se omite porque la clave viene del secreto `GCP_VM_SSH_KEY`.
+
+   **[5/6] Reglas de firewall**: crea reglas para los puertos 8080 (vote), 4000 (result) y 22 (SSH) con target-tag `microservices-demo`. Todas son idempotentes.
+
+   **[6/6] VMs de Compute Engine**: itera sobre los tres ambientes (`dev`, `staging`, `prod`). Para cada uno crea una VM `e2-medium` con Ubuntu 24.04, la SA `vm-gar-reader` adjunta, tag `microservices-demo` y un startup-script que instala automáticamente Docker, Docker Compose plugin y gcloud CLI en el primer arranque. Las VMs ya están disponibles para recibir despliegues sin configuración manual adicional.
+
+   **Resumen**: imprime las IPs externas con las URLs de acceso a cada servicio e indica los próximos pasos para configurar los secretos de GitHub (`GCP_VM_HOST_DEV/STAGING/PROD`, `GCP_VM_SSH_KEY`).
 
    **Variables y secretos adicionales para los pipelines de infraestructura**
 
    | Nombre | Tipo | Uso |
    |---|---|---|
-   | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Secretos | OIDC para autenticación en `infra-cd.yml` |
-   | `AZURE_RESOURCE_GROUP` | Variable | Nombre del grupo de recursos de Azure |
-   | `AZURE_LOCATION` | Variable | Región de Azure donde se crean los recursos (ej. `eastus`) |
-   | `ACR_NAME` | Variable | Nombre del ACR (mismo que usan los pipelines de desarrollo) |
+   | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` | Secretos | Workload Identity Federation para autenticación en `infra-cd.yml` |
+   | `GCP_PROJECT_ID` | Variable | ID del proyecto de GCP |
+   | `GAR_LOCATION` | Variable | Región del Artifact Registry (ej. `us-central1`) |
+   | `GAR_REPO` | Variable | Nombre del repositorio GAR (ej. `microservices`) |
+   | `GCE_ZONE` | Variable | Zona de las VMs de Compute Engine (ej. `us-central1-a`) |
 
 8. Implementación de la infraestructura  
 9. Demostración en vivo de cambios en el pipeline  
