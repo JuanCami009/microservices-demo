@@ -1,0 +1,30 @@
+name: Generate go.sum
+
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/SPRINT-01-test-pipeline
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: worker/go.mod
+
+      - name: Generate go.sum and update go.mod
+        working-directory: worker
+        run: go mod tidy
+
+      - name: Commit go.sum and go.mod
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add worker/go.sum worker/go.mod
+          git diff --staged --quiet || git commit -m "fix: update go.mod and go.sum for worker module"
+          git push

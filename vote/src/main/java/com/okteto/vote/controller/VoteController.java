@@ -1,10 +1,9 @@
 package com.okteto.vote.controller;
 
+import com.okteto.vote.kafka.VotePublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.CookieValue;
@@ -15,7 +14,6 @@ import org.thymeleaf.util.StringUtils;
 
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
-import java.util.concurrent.CompletableFuture;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.UUID;
@@ -29,7 +27,7 @@ public class VoteController {
     private final Logger logger = LoggerFactory.getLogger(VoteController.class);
 
     @Autowired
-    private KafkaTemplate<String, String> kafkaTemplate;
+    private VotePublisher votePublisher;
 
     @GetMapping("/")
     String index(@CookieValue(name = "voter_id", defaultValue = "") String voterId,
@@ -41,6 +39,7 @@ public class VoteController {
         model.addAttribute("optionB", v.getOptionB());
         model.addAttribute("hostname", v.getHostname());
         model.addAttribute("vote", null);
+        model.addAttribute("kafkaError", false);
 
         if (StringUtils.isEmpty(voter)) {
             voter = UUID.randomUUID().toString();
@@ -73,19 +72,8 @@ public class VoteController {
         Cookie cookie = new Cookie("voter_id", voter);
         response.addCookie(cookie);
 
-        CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send(KAFKA_TOPIC, voter, vote);
-
-        future.whenComplete((result, ex) -> {
-            if (ex == null) {
-                logger.info("Message [{}] delivered with offset {}",
-                        vote,
-                        result.getRecordMetadata().offset());
-            } else {
-                logger.warn("Unable to deliver message [{}]. {}",
-                        vote,
-                        ex.getMessage());
-            }
-        });
+        boolean delivered = votePublisher.publish(KAFKA_TOPIC, voter, vote);
+        model.addAttribute("kafkaError", !delivered);
 
         return "index";
     }
