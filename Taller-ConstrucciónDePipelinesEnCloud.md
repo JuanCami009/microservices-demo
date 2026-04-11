@@ -244,72 +244,7 @@ Sharik Camila Rueda Lucero
 
    **deploy-production**: está asociado al ambiente `production` de GitHub Environments, lo que permite configurar una aprobación manual obligatoria antes de que se ejecute. Conecta a la VM de producción por SSH, ejecuta el mismo script de Docker Compose con las imágenes versionadas y crea un Release en GitHub con las referencias exactas a las imágenes desplegadas.
 
-   **Infraestructura de GCP necesaria**
-
-   Los pipelines de deploy asumen que los siguientes recursos de GCP ya existen (se provisiona en el punto 8):
-
-   | Recurso | Propósito |
-   |---|---|
-   | Google Artifact Registry (GAR) | Almacén de imágenes Docker de los tres servicios |
-   | GCP Compute Engine VM (una por ambiente: dev, staging, prod) | Máquinas donde corre Docker Compose con el stack completo |
-   | Service Account `vm-gar-reader` adjunta a cada VM | Permite que la VM ejecute `gcloud auth configure-docker` sin credenciales explícitas (rol `roles/artifactregistry.reader`) |
-   | Workload Identity Federation + Service Account para GitHub Actions | Identidad que usan los pipelines de GitHub Actions para hacer push al GAR (sin secretos de larga vida) |
-
-   Nota: si el presupuesto es limitado, las tres VMs pueden ser la misma máquina usando `docker compose --project-name dev/staging/prod` para mantener los stacks aislados, ajustando los puertos para evitar conflictos.
-
-   **Autenticación con GCP mediante Workload Identity Federation (sin secretos de larga vida)**
-
-   Los tres pipelines de deploy usan la acción `google-github-actions/auth@v2` con Workload Identity Federation (OIDC) en lugar de almacenar credenciales como secreto. El flujo es: GitHub genera un token JWT firmado → GCP IAM lo valida contra el proveedor de identidad configurado → se emite un token de acceso de corta duración. Esto elimina la rotación manual de claves de service account.
-
-   Para configurar la federación se ejecuta una vez desde Google Cloud Shell:
-
-   ```bash
-   # Variables
-   PROJECT_ID="mi-proyecto"
-   GITHUB_USER="mi-usuario"
-   REPO_NAME="microservices-demo"
-   POOL_NAME="github-pool"
-   PROVIDER_NAME="github-provider"
-   SA_NAME="github-actions-sa"
-
-   # 1. Crear Workload Identity Pool
-   gcloud iam workload-identity-pools create "$POOL_NAME" --project="$PROJECT_ID" --location="global" --display-name="GitHub Actions Pool"
-
-   # 2. Crear el proveedor OIDC en el pool
-   POOL_ID=$(gcloud iam workload-identity-pools describe "$POOL_NAME" --project="$PROJECT_ID" --location="global" --format="value(name)")
-   gcloud iam workload-identity-pools providers create-oidc "$PROVIDER_NAME" --project="$PROJECT_ID" --location="global" --workload-identity-pool="$POOL_NAME" --issuer-uri="https://token.actions.githubusercontent.com" --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" --attribute-condition="attribute.repository=='$GITHUB_USER/$REPO_NAME'"
-
-   # 3. Crear Service Account para GitHub Actions
-   gcloud iam service-accounts create "$SA_NAME" --project="$PROJECT_ID" --display-name="GitHub Actions SA"
-   SA_EMAIL="$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
-
-   # 4. Asignar permisos de push al Artifact Registry
-   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA_EMAIL" --role="roles/artifactregistry.writer"
-
-   # 5. Vincular GitHub Actions con la Service Account
-   gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" --project="$PROJECT_ID" --role="roles/iam.workloadIdentityUser" --member="principalSet://iam.googleapis.com/$POOL_ID/attribute.repository/$GITHUB_USER/$REPO_NAME"
-   ```
-
-   **Secretos y variables necesarios en el repositorio de GitHub**
-
-   | Nombre | Tipo | Uso |
-   |---|---|---|
-   | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Secreto | URI completo del proveedor Workload Identity (ej. `projects/123/locations/global/workloadIdentityPools/github-pool/providers/github-provider`) |
-   | `GCP_SERVICE_ACCOUNT` | Secreto | Email de la Service Account para GitHub Actions (ej. `github-actions-sa@proyecto.iam.gserviceaccount.com`) |
-   | `GCP_VM_HOST_DEV` | Secreto | IP externa de la VM de desarrollo |
-   | `GCP_VM_HOST_STAGING` | Secreto | IP externa de la VM de staging |
-   | `GCP_VM_HOST_PROD` | Secreto | IP externa de la VM de producción |
-   | `GCP_VM_USERNAME` | Secreto | Usuario SSH de las VMs (ej. `ubuntu`) |
-   | `GCP_VM_SSH_KEY` | Secreto | Clave SSH privada para acceder a las VMs |
-   | `GCP_PROJECT_ID` | Variable | ID del proyecto de GCP (ej. `my-project-123`) |
-   | `GAR_LOCATION` | Variable | Región del Artifact Registry (ej. `us-central1`) |
-   | `GAR_REPO` | Variable | Nombre del repositorio en GAR (ej. `microservices`) |
-   | `GITHUB_TOKEN` | Automático | Creación de GitHub Releases (lo provee GitHub Actions) |
-
-   **Análisis estático — configuración en `vote/pom.xml`**
-
-   Se agrega el plugin `spotbugs-maven-plugin` versión `4.8.3.1` en la sección `<build><plugins>`. La configuración usa `threshold=High` para reportar únicamente bugs de severidad alta o superior, evitando falsos positivos en código que usa frameworks como Spring Boot. El análisis se invoca con `mvn spotbugs:check` y detiene el pipeline si encuentra algún bug bajo el umbral configurado.
-
+  
 7. Pipelines de infraestructura (incluidos los scripts para las tareas que lo necesiten)
 
    Los pipelines de infraestructura se implementan como GitHub Actions en `.github/workflows/`. Están alineados con la estrategia Trunk-based Development para operaciones del punto 3: las ramas `infra/**` activan validación automática antes del merge a `main`.
@@ -327,16 +262,6 @@ Sharik Camila Rueda Lucero
    **validate-charts**: instala Helm con la acción `azure/setup-helm@v4` y valida los cuatro charts del repositorio. Para cada uno ejecuta dos comandos: `helm lint` detecta errores de sintaxis YAML y valores incorrectos en el chart; `helm template` renderiza el chart completo para verificar que los templates se evalúen sin errores. Los charts `vote`, `result` y `worker` reciben `--set image=placeholder:latest` ya que requieren ese valor para renderizarse, mientras que `infrastructure/` no lo necesita. El job falla si cualquiera de los ocho comandos devuelve error.
 
    **scan-security**: ejecuta **Trivy** (Aqua Security) en dos modalidades. Primero, un escaneo de configuración (`trivy config`) sobre todos los Dockerfiles del repositorio detectando malas prácticas como ejecución como root, uso innecesario de ADD, o secretos expuestos en capas — este escaneo sí bloquea el pipeline (`exit-code: 1`) ante hallazgos CRITICAL o HIGH. Segundo, un escaneo de vulnerabilidades (`trivy image`) sobre las imágenes base de cada servicio (`eclipse-temurin:22-jre`, `golang:1.24-alpine`, `node:22-alpine`) que reporta CVEs conocidos con parche disponible de forma informativa sin bloquear, ya que las vulnerabilidades en imágenes base upstream no son bloqueantes hasta que exista una versión parcheada. Los reportes se guardan como artefactos con retención de 30 días.
-
-   **Variables y secretos para los pipelines de infraestructura**
-
-   | Nombre | Tipo | Uso |
-   |---|---|---|
-   | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` | Secretos | Workload Identity Federation para autenticación en GCP |
-   | `GCP_PROJECT_ID` | Variable | ID del proyecto de GCP |
-   | `GAR_LOCATION` | Variable | Región del Artifact Registry (ej. `us-central1`) |
-   | `GAR_REPO` | Variable | Nombre del repositorio GAR (ej. `microservices`) |
-   | `GCE_ZONE` | Variable | Zona de las VMs de Compute Engine (ej. `us-central1-a`) |
 
 8. Implementación de la infraestructura
 
