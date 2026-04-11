@@ -312,16 +312,13 @@ Sharik Camila Rueda Lucero
 
 7. Pipelines de infraestructura (incluidos los scripts para las tareas que lo necesiten)
 
-   Los pipelines de infraestructura se implementan como GitHub Actions en `.github/workflows/` y un script de aprovisionamiento en `scripts/`. Están alineados con la estrategia Trunk-based Development para operaciones del punto 3: las ramas `infra/**` activan validación automática, y el merge a `main` dispara el aprovisionamiento.
+   Los pipelines de infraestructura se implementan como GitHub Actions en `.github/workflows/`. Están alineados con la estrategia Trunk-based Development para operaciones del punto 3: las ramas `infra/**` activan validación automática antes del merge a `main`.
 
-   **Resumen de los dos pipelines**
+   **Pipeline — Infra CI (`.github/workflows/infra-ci.yml`)**
 
    | Archivo | Disparador | Propósito |
    |---|---|---|
    | `infra-ci.yml` | Push a `infra/**`, `hotfix/infra-**`; PR hacia `main` | Validación de Helm charts + escaneo de seguridad con Trivy |
-   | `infra-cd.yml` | Push a `main` | Aprovisionamiento idempotente de recursos GCP vía `scripts/provision-gcp.sh` |
-
-   **Pipeline 1 — Infra CI (`.github/workflows/infra-ci.yml`)**
 
    Corresponde al paso 4 del flujo de operaciones: *"el pipeline de infraestructura se ejecuta automáticamente: validación de Helm charts, escaneo de seguridad de imágenes Docker"*. Se activa en cualquier rama `infra/**` y en todas las PRs hacia `main`.
 
@@ -331,41 +328,245 @@ Sharik Camila Rueda Lucero
 
    **scan-security**: ejecuta **Trivy** (Aqua Security) en dos modalidades. Primero, un escaneo de configuración (`trivy config`) sobre todos los Dockerfiles del repositorio detectando malas prácticas como ejecución como root, uso innecesario de ADD, o secretos expuestos en capas — este escaneo sí bloquea el pipeline (`exit-code: 1`) ante hallazgos CRITICAL o HIGH. Segundo, un escaneo de vulnerabilidades (`trivy image`) sobre las imágenes base de cada servicio (`eclipse-temurin:22-jre`, `golang:1.24-alpine`, `node:22-alpine`) que reporta CVEs conocidos con parche disponible de forma informativa sin bloquear, ya que las vulnerabilidades en imágenes base upstream no son bloqueantes hasta que exista una versión parcheada. Los reportes se guardan como artefactos con retención de 30 días.
 
-   **Pipeline 2 — Infra CD (`.github/workflows/infra-cd.yml`)**
-
-   Se ejecuta en cada merge a `main`. Autentica con GCP mediante Workload Identity Federation y ejecuta `scripts/provision-gcp.sh`. Está asociado al ambiente `infrastructure` de GitHub Environments, lo que permite configurar una aprobación manual si se quiere mayor control sobre cuándo se aplican cambios de infraestructura.
-
-   Al finalizar, el pipeline muestra un resumen de las VMs y repositorios creados usando `gcloud compute instances list` y `gcloud artifacts repositories list`, lo que sirve como registro de auditoría de qué se aprovisionó y cuándo.
-
-   **Script de aprovisionamiento (`scripts/provision-gcp.sh`)**
-
-   Script Bash idempotente que crea o verifica la existencia de cada recurso antes de actuar. Recibe configuración por variables de entorno (`GCP_PROJECT_ID`, `GAR_LOCATION`, `GAR_REPO`, `GCE_ZONE`). Ejecuta seis etapas numeradas:
-
-   **[1/6] APIs de GCP**: habilita las APIs necesarias (`compute.googleapis.com`, `artifactregistry.googleapis.com`, `iam.googleapis.com`) con `gcloud services enable`.
-
-   **[2/6] Google Artifact Registry**: verifica existencia con `gcloud artifacts repositories describe` antes de crear. Crea el repositorio en formato Docker en la región especificada.
-
-   **[3/6] Service Account para VMs**: crea la SA `vm-gar-reader` y le asigna el rol `roles/artifactregistry.reader` sobre el repositorio GAR, permitiendo que las VMs hagan `gcloud auth configure-docker` sin credenciales explícitas.
-
-   **[4/6] Clave SSH**: genera un par de claves SSH `ed25519` para que GitHub Actions pueda conectarse a las VMs vía SSH. Si se ejecuta en GitHub Actions (`GITHUB_ACTIONS=true`), este paso se omite porque la clave viene del secreto `GCP_VM_SSH_KEY`.
-
-   **[5/6] Reglas de firewall**: crea reglas para los puertos 8080 (vote), 4000 (result) y 22 (SSH) con target-tag `microservices-demo`. Todas son idempotentes.
-
-   **[6/6] VMs de Compute Engine**: itera sobre los tres ambientes (`dev`, `staging`, `prod`). Para cada uno crea una VM `e2-medium` con Ubuntu 24.04, la SA `vm-gar-reader` adjunta, tag `microservices-demo` y un startup-script que instala automáticamente Docker, Docker Compose plugin y gcloud CLI en el primer arranque. Las VMs ya están disponibles para recibir despliegues sin configuración manual adicional.
-
-   **Resumen**: imprime las IPs externas con las URLs de acceso a cada servicio e indica los próximos pasos para configurar los secretos de GitHub (`GCP_VM_HOST_DEV/STAGING/PROD`, `GCP_VM_SSH_KEY`).
-
-   **Variables y secretos adicionales para los pipelines de infraestructura**
+   **Variables y secretos para los pipelines de infraestructura**
 
    | Nombre | Tipo | Uso |
    |---|---|---|
-   | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` | Secretos | Workload Identity Federation para autenticación en `infra-cd.yml` |
+   | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` | Secretos | Workload Identity Federation para autenticación en GCP |
    | `GCP_PROJECT_ID` | Variable | ID del proyecto de GCP |
    | `GAR_LOCATION` | Variable | Región del Artifact Registry (ej. `us-central1`) |
    | `GAR_REPO` | Variable | Nombre del repositorio GAR (ej. `microservices`) |
    | `GCE_ZONE` | Variable | Zona de las VMs de Compute Engine (ej. `us-central1-a`) |
 
-8. Implementación de la infraestructura  
+8. Implementación de la infraestructura
+
+   ### Arquitectura general
+
+   ```
+   GitHub Actions
+        │
+        │  Workload Identity Federation (OIDC)
+        ▼
+   Google Cloud Platform
+        ├── Artifact Registry (us-central1)
+        │     └── Repositorio Docker: microservices
+        │
+        └── Compute Engine
+              ├── microservices-demo-dev      (35.222.97.106)
+              ├── microservices-demo-staging  (34.42.246.65)
+              └── microservices-demo-prod     (34.57.190.1)
+   ```
+
+   Cada VM tiene adjunta una **Service Account** (`vm-gar-reader`) con el rol `roles/artifactregistry.reader`, lo que le permite hacer pull de imágenes del Artifact Registry sin credenciales explícitas. Los pipelines de GitHub Actions usan **Workload Identity Federation** para autenticarse en GCP sin secretos de larga vida.
+
+   ### Prerequisitos
+
+   - Cuenta de Google con acceso al portal de GCP
+   - Repositorio en GitHub con los workflows en `.github/workflows/`
+   - Acceso a Google Cloud Shell (no se requiere instalar nada localmente)
+
+   ### Configuración de autenticación OIDC (Workload Identity Federation)
+
+   Workload Identity Federation permite que GitHub Actions obtenga tokens de acceso temporales de GCP sin guardar credenciales estáticas. GitHub genera un JWT firmado que GCP valida contra el proveedor configurado.
+
+   **Habilitar API y crear el pool:**
+
+   ```bash
+   PROJECT_ID="microservices-demo-492923"
+   GITHUB_USER="JuanCami009"
+   REPO_NAME="microservices-demo"
+
+   gcloud services enable iamcredentials.googleapis.com --project="$PROJECT_ID"
+
+   gcloud iam workload-identity-pools create "github-pool" --project="$PROJECT_ID" --location="global" --display-name="GitHub Actions Pool"
+   ```
+
+   **Crear el proveedor OIDC** (el parámetro `--attribute-condition` restringe el acceso exclusivamente al repositorio especificado):
+
+   ```bash
+   gcloud iam workload-identity-pools providers create-oidc "github-provider" --project="$PROJECT_ID" --location="global" --workload-identity-pool="github-pool" --display-name="GitHub Provider" --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" --issuer-uri="https://token.actions.githubusercontent.com" --attribute-condition="attribute.repository=='$GITHUB_USER/$REPO_NAME'"
+   ```
+
+   **Crear la Service Account para GitHub Actions y asignar permisos:**
+
+   ```bash
+   gcloud iam service-accounts create "github-actions-sa" --project="$PROJECT_ID" --display-name="GitHub Actions Service Account"
+
+   gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:github-actions-sa@$PROJECT_ID.iam.gserviceaccount.com" --role="roles/artifactregistry.writer"
+   ```
+
+   **Vincular el pool WIF con la Service Account:**
+
+   ```bash
+   PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='get(projectNumber)') && gcloud iam service-accounts add-iam-policy-binding "github-actions-sa@$PROJECT_ID.iam.gserviceaccount.com" --project="$PROJECT_ID" --role="roles/iam.workloadIdentityUser" --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/attribute.repository/$GITHUB_USER/$REPO_NAME"
+   ```
+
+   **Valores obtenidos para los secrets de GitHub:**
+   - `GCP_SERVICE_ACCOUNT`: `github-actions-sa@microservices-demo-492923.iam.gserviceaccount.com`
+   - `GCP_WORKLOAD_IDENTITY_PROVIDER`: `projects/664112216219/locations/global/workloadIdentityPools/github-pool/providers/github-provider`
+
+   ### Aprovisionamiento de recursos en GCP
+
+   **Google Artifact Registry** — creado desde la consola de GCP (**Artifact Registry → Create Repository**):
+
+   | Campo | Valor |
+   |-------|-------|
+   | Name | `microservices` |
+   | Format | `Docker` |
+   | Mode | `Standard` |
+   | Location type | `Region` → `us-central1` |
+
+   Las imágenes se almacenan con el formato: `us-central1-docker.pkg.dev/microservices-demo-492923/microservices/SERVICE:TAG`
+
+   **Service Account para las VMs** — creada desde **IAM & Admin → Service Accounts**:
+
+   | Campo | Valor |
+   |-------|-------|
+   | Name | `vm-gar-reader` |
+   | Role | `Artifact Registry Reader` |
+
+   Permite que cada VM haga pull de imágenes sin credenciales explícitas.
+
+   **Reglas de firewall** — creadas desde **VPC Network → Firewall**:
+
+   | Regla | Puerto | Propósito |
+   |-------|--------|-----------|
+   | `allow-microservices-8080` | TCP 8080 | Servicio vote |
+   | `allow-microservices-4000` | TCP 4000 | Servicio result |
+   | `allow-ssh-microservices` | TCP 22 | SSH desde GitHub Actions |
+
+   Todas usan target tag `microservices-demo` y source `0.0.0.0/0`.
+
+   **Máquinas Virtuales de Compute Engine** — creadas desde **Compute Engine → VM Instances → Create Instance**:
+
+   | Campo | Valor |
+   |-------|-------|
+   | Region / Zone | `us-central1` / `us-central1-a` |
+   | Machine type | `e2-medium` |
+   | Boot disk | Ubuntu 24.04 LTS, 20 GB |
+   | Service account | `vm-gar-reader` |
+   | Access scopes | Allow full access to all Cloud APIs |
+   | Network tags | `microservices-demo` |
+
+   | VM | IP Pública |
+   |----|-----------|
+   | `microservices-demo-dev` | `35.222.97.106` |
+   | `microservices-demo-staging` | `34.42.246.65` |
+   | `microservices-demo-prod` | `34.57.190.1` |
+
+   ### Instalación de dependencias en las VMs
+
+   **Generar clave SSH y agregarla a las VMs** (desde Cloud Shell):
+
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/gcp_deploy -N "" -C "github-actions-deploy"
+
+   gcloud config set project microservices-demo-492923
+
+   gcloud compute instances add-metadata microservices-demo-dev --zone=us-central1-a --metadata="ssh-keys=ubuntu:$(cat ~/.ssh/gcp_deploy.pub)"
+   gcloud compute instances add-metadata microservices-demo-staging --zone=us-central1-a --metadata="ssh-keys=ubuntu:$(cat ~/.ssh/gcp_deploy.pub)"
+   gcloud compute instances add-metadata microservices-demo-prod --zone=us-central1-a --metadata="ssh-keys=ubuntu:$(cat ~/.ssh/gcp_deploy.pub)"
+   ```
+
+   **Instalar Docker en las VMs:**
+
+   ```bash
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@35.222.97.106 "curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu"
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@34.42.246.65 "curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu"
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@34.57.190.1 "curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu"
+   ```
+
+   Docker versión instalada: **29.4.0**
+
+   **Crear directorio de trabajo y instalar gcloud CLI:**
+
+   ```bash
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@35.222.97.106 "sudo mkdir -p /opt/microservices-demo && sudo chown ubuntu:ubuntu /opt/microservices-demo"
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@34.42.246.65 "sudo mkdir -p /opt/microservices-demo && sudo chown ubuntu:ubuntu /opt/microservices-demo"
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@34.57.190.1 "sudo mkdir -p /opt/microservices-demo && sudo chown ubuntu:ubuntu /opt/microservices-demo"
+
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@35.222.97.106 "sudo snap install google-cloud-cli --classic"
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@34.42.246.65 "sudo snap install google-cloud-cli --classic"
+   ssh -i ~/.ssh/gcp_deploy -o StrictHostKeyChecking=no ubuntu@34.57.190.1 "sudo snap install google-cloud-cli --classic"
+   ```
+
+   ### Configuración de GitHub
+
+   **Secrets** — ruta: **Settings → Secrets and variables → Actions → Secrets**
+
+   | Secret | Valor |
+   |--------|-------|
+   | `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/664112216219/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
+   | `GCP_SERVICE_ACCOUNT` | `github-actions-sa@microservices-demo-492923.iam.gserviceaccount.com` |
+   | `GCP_VM_HOST_DEV` | `35.222.97.106` |
+   | `GCP_VM_HOST_STAGING` | `34.42.246.65` |
+   | `GCP_VM_HOST_PROD` | `34.57.190.1` |
+   | `GCP_VM_USERNAME` | `ubuntu` |
+   | `GCP_VM_SSH_KEY` | Contenido de `~/.ssh/gcp_deploy` (clave privada completa) |
+
+   **Variables** — ruta: **Settings → Secrets and variables → Actions → Variables**
+
+   | Variable | Valor |
+   |----------|-------|
+   | `GCP_PROJECT_ID` | `microservices-demo-492923` |
+   | `GAR_LOCATION` | `us-central1` |
+   | `GAR_REPO` | `microservices` |
+   | `GCE_ZONE` | `us-central1-a` |
+
+   **Environments** — ruta: **Settings → Environments → New environment**
+
+   | Environment | Propósito | Protección |
+   |-------------|-----------|------------|
+   | `staging` | Deploy de release candidates | Opcional: reviewer manual |
+   | `production` | Deploy a producción | Required reviewers activado |
+
+   ### Configuración de ramas Git
+
+   ```bash
+   git checkout main
+   git checkout -b develop
+   git push origin develop
+   git checkout main
+   ```
+
+   ### Problema encontrado durante la verificación del pipeline CI
+
+   El repositorio no incluía el archivo `worker/go.sum`, necesario para que `go vet` y `go test` puedan verificar la integridad de las dependencias del módulo Go.
+
+   **Error original:**
+   ```
+   Error: missing go.sum entry for module providing package github.com/IBM/sarama
+   go: updates to go.mod needed; to update it: go mod tidy
+   ```
+
+   **Solución:** se creó un workflow temporal (`.github/workflows/generate-gosum.yml`) con trigger `workflow_dispatch` que ejecuta `go mod tidy` en la rama feature y hace commit automático de los archivos generados:
+
+   ```yaml
+   - name: Generate go.sum and update go.mod
+     working-directory: worker
+     run: go mod tidy
+
+   - name: Commit go.mod and go.sum
+     run: |
+       git config user.name "github-actions[bot]"
+       git config user.email "github-actions[bot]@users.noreply.github.com"
+       git add worker/go.mod worker/go.sum
+       git diff --staged --quiet || git commit -m "fix: update go.mod and go.sum for worker module"
+       git push
+   ```
+
+   El workflow se eliminó una vez cumplido su propósito.
+
+   ### Resultado final del pipeline CI
+
+   Pipeline `ci.yml` ejecutado en la rama `feature/SPRINT-01-test-pipeline`:
+
+   | Job | Estado |
+   |-----|--------|
+   | `test-vote` — Java/Spring Boot | Passed |
+   | `test-worker` — Go | Passed |
+   | `build-result` — Node.js | Passed |
+
 9. Demostración en vivo de cambios en el pipeline  
    
 

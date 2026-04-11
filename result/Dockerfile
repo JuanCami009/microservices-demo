@@ -30,4 +30,6 @@ ENV PORT 80
 
 EXPOSE 80
 
+USER node
+
 CMD ["/tini", "--", "node", "server.js"]

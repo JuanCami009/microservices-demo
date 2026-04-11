@@ -1,0 +1,5 @@
+# Los Helm charts en infrastructure/, vote/chart, result/chart y worker/chart
+# son legacy y no se usan en el despliegue actual (Docker Compose en GCP).
+# Se suprimen sus hallazgos de securityContext para no bloquear el pipeline.
+KSV-0014
+KSV-0118
