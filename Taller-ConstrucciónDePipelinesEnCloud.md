@@ -38,46 +38,45 @@ Sharik Camila Rueda Lucero
 
    
 
-* feature/SPRINT-01-US-04-vote-kafka-error-handling  
-* feature/SPRINT-02-US-11-worker-upsert-retry  
-* feature/SPRINT-02-US-15-result-websocket-reconnect  
+   * feature/SPRINT-01-US-04-vote-kafka-error-handling  
+   * feature/SPRINT-02-US-11-worker-upsert-retry  
+   * feature/SPRINT-02-US-15-result-websocket-reconnect  
     
-  Estas ramas nacen siempre desde **develop**, corresponden a una sola historia de usuario del sprint backlog, y se mergean de vuelta a **develop** mediante Pull Request con aprobación de al menos un compañero del equipo. Una vez mergeadas, se eliminan. Es importante no dejar estas ramas abiertas más de lo necesario dado que vote, result y worker comparten Kafka y PostgreSQL como puntos de integración; cambios sin integrar rápidamente generan conflictos en esos puntos de encuentro.  
-    
-  **Ramas de release \- una por sprint:**  
-    
-  release/SPRINT-\<número\>-v\<versión\>
+   Estas ramas nacen siempre desde **develop**, corresponden a una sola historia de usuario del sprint backlog, y se mergean de vuelta a **develop** mediante Pull Request con aprobación de al menos un compañero del equipo. Una vez mergeadas, se eliminan. Es importante no dejar estas ramas abiertas más de lo necesario dado que vote, result y worker comparten Kafka y PostgreSQL como puntos de integración; cambios sin integrar rápidamente generan conflictos en esos puntos de encuentro.  
+      
+   **Ramas de release \- una por sprint:**  
+      
+   release/SPRINT-\<número\>-v\<versión\>
 
-  **Ejemplo:** release/SPRINT-02-v1.2.0
-
-
-  Se crea desde **develop** al final del sprint, una vez que todas las historias del sprint están mergeadas. En esta rama solo se permiten correcciones de bugs detectados en la sprint review o en las pruebas finales, no features nuevas. Una vez estabilizada, se mergea tanto a **main** (con su tag de versión) como de vuelta a **develop** para mantener consistencia. Esto mapea directamente con la sprint review de Scrum: la rama **release/** es el incremento del sprint que se demuestra al Product Owner.
+   **Ejemplo:** release/SPRINT-02-v1.2.0
 
 
-  **Ramas de hotfix \- para bugs críticos en producción:**
+   Se crea desde **develop** al final del sprint, una vez que todas las historias del sprint están mergeadas. En esta rama solo se permiten correcciones de bugs detectados en la sprint review o en las pruebas finales, no features nuevas. Una vez estabilizada, se mergea tanto a **main** (con su tag de versión) como de vuelta a **develop** para mantener consistencia. Esto mapea directamente con la sprint review de Scrum: la rama **release/** es el incremento del sprint que se demuestra al Product Owner.
 
 
-  hotfix/v\<versión\>-\<descripción\>
+   **Ramas de hotfix \- para bugs críticos en producción:**
 
 
-  **Ejemplo:** hotfix/v1.2.1-worker-restart-clears-votes
+   hotfix/v\<versión\>-\<descripción\>
 
 
-  Nacen desde **main**, corrigen el problema mínimo necesario y se mergean tanto a **main** (con nuevo tag) como a **develop** para que el fix quede incorporado en el flujo normal de desarrollo.
-
-  **Flujo del desarrollador dentro del sprint**
+   **Ejemplo:** hotfix/v1.2.1-worker-restart-clears-votes
 
 
-1. En el sprint planning se asigna la historia al desarrollador.  
-2. El desarrollador crea la rama **feature/** desde **develop** actualizado.  
-3. Hace commits frecuentes y descriptivos: **feat(vote): add retry on Kafka publish failure.**  
-4. Al terminar, abre un Pull Request hacia **develop** con descripción y referencia a la historia de usuario.  
-5. El pipeline CI se ejecuta automáticamente: build, tests unitarios, análisis estático de código.  
-6. Un compañero del equipo aprueba el PR mediante peer review.  
-7. Se hace merge a **develop** y se elimina la rama de feature.  
-8. Al cierre del sprint, el Scrum Master o Tech Lead crea la rama **release/** desde **develop**.  
-9. Se estabiliza, se mergea a **main** con tag y de vuelta a **develop**.  
-     
+   Nacen desde **main**, corrigen el problema mínimo necesario y se mergean tanto a **main** (con nuevo tag) como a **develop** para que el fix quede incorporado en el flujo normal de desarrollo.
+
+   **Flujo del desarrollador dentro del sprint**
+
+      1. En el sprint planning se asigna la historia al desarrollador.  
+      2. El desarrollador crea la rama **feature/** desde **develop** actualizado.  
+      3. Hace commits frecuentes y descriptivos: **feat(vote): add retry on Kafka publish failure.**  
+      4. Al terminar, abre un Pull Request hacia **develop** con descripción y referencia a la historia de usuario.  
+      5. El pipeline CI se ejecuta automáticamente: build, tests unitarios, análisis estático de código.  
+      6. Un compañero del equipo aprueba el PR mediante peer review.  
+      7. Se hace merge a **develop** y se elimina la rama de feature.  
+      8. Al cierre del sprint, el Scrum Master o Tech Lead crea la rama **release/** desde **develop**.  
+      9. Se estabiliza, se mergea a **main** con tag y de vuelta a **develop**.  
+      
      
 3. Estrategia de branching para operaciones  
      
@@ -97,35 +96,31 @@ Sharik Camila Rueda Lucero
      
    **Ejemplos reales para microservices-demo:**  
      
-* infra/SPRINT-01-kafka-kraft-persistentvolumeclaim  
-* infra/SPRINT-02-postgresql-resource-limits  
-* infra/SPRINT-02-helm-result-ingress-tls  
-* infra/SPRINT-03-worker-deployment-image-update  
+   * infra/SPRINT-01-kafka-kraft-persistentvolumeclaim  
+   * infra/SPRINT-02-postgresql-resource-limits  
+   * infra/SPRINT-02-helm-result-ingress-tls  
+   * infra/SPRINT-03-worker-deployment-image-update  
     
-  Estas ramas nacen desde **main**, se trabajan rápido (máximo un par de días), se validan con **helm lint** y **helm template**, pasan por el pipeline de infraestructura y se mergean de vuelta a **main**. Se eliminan inmediatamente después del merge. No se acumulan cambios grandes en una sola rama: si un cambio de infraestructura es complejo, se parte en incrementos pequeños que se integran progresivamente al trunk.  
-    
-  **Para emergencias en producción:**  
-    
-  hotfix/infra-\<fecha\>-\<descripción\>  
-    
-  **Ejemplo:** hotfix/infra-20260413-kafka-broker-oom-limit  
-    
-  Sale desde **main**, aplica el fix mínimo necesario, PR con aprobación acelerada del Tech Lead de operaciones y merge inmediato a **main**. El pipeline despliega automáticamente.  
-  Flujo  
-    
-  **Flujo del equipo de operaciones dentro del sprint**  
-    
-1. En el sprint planning se identifican los cambios de infraestructura necesarios para soportar las historias del equipo de desarrollo.  
-2. El equipo de operaciones crea la rama **infra/** desde **main** actualizado.  
-3. Modifica los manifiestos o charts, valida localmente con **helm lint** y **helm template**.  
-4. El pipeline de infraestructura se ejecuta automáticamente: validación de Helm charts, escaneo de seguridad de imágenes Docker.  
-5. PR hacia **main** con aprobación de un par del equipo de operaciones.  
-6. Merge a **main** y despliegue automático al ambiente correspondiente.  
-7. La rama **infra/** se elimina.
-
-   
-
-   
+   Estas ramas nacen desde **main**, se trabajan rápido (máximo un par de días), se validan con **helm lint** y **helm template**, pasan por el pipeline de infraestructura y se mergean de vuelta a **main**. Se eliminan inmediatamente después del merge. No se acumulan cambios grandes en una sola rama: si un cambio de infraestructura es complejo, se parte en incrementos pequeños que se integran progresivamente al trunk.  
+      
+   **Para emergencias en producción:**  
+      
+   hotfix/infra-\<fecha\>-\<descripción\>  
+      
+   **Ejemplo:** hotfix/infra-20260413-kafka-broker-oom-limit  
+      
+   Sale desde **main**, aplica el fix mínimo necesario, PR con aprobación acelerada del Tech Lead de operaciones y merge inmediato a **main**. El pipeline despliega automáticamente.  
+   Flujo  
+      
+   **Flujo del equipo de operaciones dentro del sprint**  
+      
+      1. En el sprint planning se identifican los cambios de infraestructura necesarios para soportar las historias del equipo de desarrollo.  
+      2. El equipo de operaciones crea la rama **infra/** desde **main** actualizado.  
+      3. Modifica los manifiestos o charts, valida localmente con **helm lint** y **helm template**.  
+      4. El pipeline de infraestructura se ejecuta automáticamente: validación de Helm charts, escaneo de seguridad de imágenes Docker.  
+      5. PR hacia **main** con aprobación de un par del equipo de operaciones.  
+      6. Merge a **main** y despliegue automático al ambiente correspondiente.  
+      7. La rama **infra/** se elimina.
 
 4. Patrones de diseño de nube (mínimo dos)  
      
@@ -181,11 +176,10 @@ Sharik Camila Rueda Lucero
 
    Como se describió en la limitación del Retry: si Kafka cae durante un período prolongado, el Retry por sí solo convierte cada solicitud de voto en una secuencia de intentos bloqueados que consumen threads del servidor. El Circuit Breaker corta ese ciclo: después de detectar un umbral de fallos consecutivos, abre el circuito y responde a todos los votos subsiguientes con un fallback instantáneo, preservando los recursos del servicio vote y manteniendo la experiencia del usuario controlada.
 
-   
-
-   
-
 5. Diagrama de arquitectura  
+
+![Architecture diagram](Diagram.jpg)
+
 6. Pipelines de desarrollo (incluidos los scripts para las tareas que lo necesiten)
 
    Los pipelines de desarrollo se implementan como GitHub Actions en `.github/workflows/`. Están diseñados en correspondencia directa con la estrategia Git Flow del punto 2.
@@ -491,9 +485,3 @@ Sharik Camila Rueda Lucero
    | `test-vote` — Java/Spring Boot | Passed |
    | `test-worker` — Go | Passed |
    | `build-result` — Node.js | Passed |
-
-9. Demostración en vivo de cambios en el pipeline  
-   
-
-**Nota:** Entrega de los resultados: debe incluir la documentación necesaria para todos  
-los elementos desarrollados.  
